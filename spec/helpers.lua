@@ -25,6 +25,7 @@ end
 
 local _M = {
   cassandra_version = os.getenv("CASSANDRA") or "3.9",
+  scylladb_version = os.getenv("SCYLLADB") or "",
   ssl_path = os.getenv("SSL_PATH") or "spec/fixtures/ssl"
 }
 

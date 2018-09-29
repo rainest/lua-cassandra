@@ -4,12 +4,39 @@ set -e
 # Install ccm
 # -----------
 pip install --user PyYAML six
-git clone https://github.com/pcmanus/ccm.git
-pushd ccm
-  # sha of 'Release 3.0.1'
-  git checkout 599e2026035e334dbc2ce24117ce745641506374
-  ./setup.py install --user
-popd
+
+if [ -z "$SCYLLADB" ]; then
+    git clone https://github.com/pcmanus/ccm.git
+    pushd ccm
+      # sha of 'Release 3.0.1'
+      git checkout 599e2026035e334dbc2ce24117ce745641506374
+      ./setup.py install --user
+    popd
+
+else
+    pip install --user -I cassandra-driver==3.7.1 psutil
+
+    mkdir -p scylla-dir/resources
+    pushd scylla-dir
+        git clone https://github.com/scylladb/scylla.git
+        git clone https://github.com/scylladb/scylla-ccm.git
+        pushd scylla-ccm
+            source scylla_ccm_env.sh
+        popd
+
+        git clone https://github.com/scylladb/scylla-jmx.git
+        pushd scylla-jmx
+            mvn install
+        popd
+
+        git clone https://github.com/scylladb/scylla-tools-java.git
+        pushd scylla-tools-java
+            ant
+        popd
+
+        ln -s scylla-tools-java resources/cassandra
+    popd
+fi
 
 if [ "$OPENRESTY_TESTS" = true ]; then
   #------------------------------
