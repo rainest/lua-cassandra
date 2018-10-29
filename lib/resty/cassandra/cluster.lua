@@ -7,6 +7,8 @@
 local resty_lock = require 'resty.lock'
 local cassandra = require 'cassandra'
 local cql = require 'cassandra.cql'
+local semaphore = require "ngx.semaphore"
+local getfenv = getfenv
 
 local update_time = ngx.update_time
 local cql_errors = cql.errors
@@ -298,6 +300,7 @@ function _Cluster.new(opts)
 
   local peers_opts = {}
   local lock_opts = {}
+  local refresh_sema = semaphore.new(1)
   local dict_name = opts.shm or 'cassandra'
   if type(dict_name) ~= 'string' then
     return nil, 'shm must be a string'
@@ -368,6 +371,7 @@ function _Cluster.new(opts)
 
   return setmetatable({
     shm = shared[dict_name],
+    refresh_sema= refresh_sema,
     dict_name = dict_name,
     prepared_ids = {},
     peers_opts = peers_opts,
@@ -450,7 +454,14 @@ end
 -- @treturn boolean `ok`: `true` if success, `nil` if failure.
 -- @treturn string `err`: String describing the error if failure.
 function _Cluster:refresh()
-  local old_peers, err = get_peers(self)
+  self.init = false
+  if getfenv(0).__ngx_req then
+    local ready, err = self.refresh_sema:wait(10)
+    if not ready then
+      return nil, 'failed to obtain refresh semaphore: ' .. err
+    end
+  end
+  old_peers, err = get_peers(self)
   if err then return nil, err
   elseif old_peers then
     -- we first need to flush the existing peers from the shm,
@@ -552,6 +563,7 @@ function _Cluster:refresh()
 
   -- cluster is ready to be queried
   self.init = true
+  self.refresh_sema:post(1)
 
   return true
 end
@@ -830,8 +842,22 @@ do
   -- @treturn number `cql_err`: If a server-side error occurred, the CQL error code.
   function _Cluster:execute(query, args, options, coordinator_options)
     if not self.init then
-      local ok, err = self:refresh()
-      if not ok then return nil, 'could not refresh cluster: '..err end
+      local ready, err = self.refresh_sema:wait(10)
+      if not ready then
+        return nil, 'failed to obtain refresh semaphore: ' .. err
+      else
+        -- check again--a refresh may have already been in progress
+        if not self.init then
+          -- since we've already consumed one resource, release it to allow refresh to consume it
+          self.refresh_sema:post(1)
+          local ok, err = self:refresh()
+          if not ok then return nil, 'could not refresh cluster: '..err end
+        else
+          -- refresh was already in progress and completed successfully
+          -- return our resource
+          self.refresh_sema:post(1)
+        end
+      end
     end
 
     coordinator_options = coordinator_options or empty_t
@@ -885,8 +911,22 @@ do
   -- @treturn number `cql_err`: If a server-side error occurred, the CQL error code.
   function _Cluster:batch(queries, options, coordinator_options)
     if not self.init then
-      local ok, err = self:refresh()
-      if not ok then return nil, 'could not refresh cluster: '..err end
+      local ready, err = self.refresh_sema:wait(10)
+      if not ready then
+        return nil, 'failed to obtain refresh semaphore: ' .. err
+      else
+        -- check again--a refresh may have already been in progress
+        if not self.init then
+          -- since we've already consumed one resource, release it to allow refresh to consume it
+          self.refresh_sema:post(1)
+          local ok, err = self:refresh()
+          if not ok then return nil, 'could not refresh cluster: '..err end
+        else
+          -- refresh was already in progress and completed successfully
+          -- return our resource
+          self.refresh_sema:post(1)
+        end
+      end
     end
 
     coordinator_options = coordinator_options or empty_t
